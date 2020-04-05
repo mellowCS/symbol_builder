@@ -1,5 +1,5 @@
 install:
-	bapbuild -pkgs bap-frontc read_header.plugin
+	bapbuild -pkgs bap-api read_header.plugin
 	bapbundle install read_header.plugin
 
 clean:

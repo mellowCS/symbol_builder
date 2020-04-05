@@ -1,72 +1,58 @@
 open Core_kernel
 open Bap.Std
-open Format
 
 (** Refers to information bundled with application*)
 include Self()
 
-(** Module Self
-    - val name : name of plugin
-
-    Module Self.Config
-    - val param : 'a converter -> ... ?doc:string -> ... -> string -> 'a param
-      --> converts string param into Bap type
-    - val flag : ... -> ?doc:string -> string -> bool param
-      --> sets bool parameter that is set to true if mentioned
-    - val when_ready : (reader -> unit) -> unit
-      --> requests system to call function once configuration params are established.
-*)
 
 type func_sym = {
-  address: tid option;
+  address: tid;
   name : string;
   cconv : string;
-  args : string list;
-  ret : string
+  args : (string * string) list
 }
 
 
-let cmdline_params = [
-  ("header_dir", "Directory for C header files which can be included to improve information gathering of the disassembly");
-  ("cconv", "Calling convention of the binary to be analysed")
-]
+let remove_sub_name (sub : string) (arg : string) : string =
+  String.chop_prefix_exn arg ~prefix:(sub^"_")
 
 
-(** Generate Bap params from string * string tuples of name and docstrings *)
-let generate_bap_params params =
-  List.map params (fun (name, docstring) -> (name, Config.param Config.string name ~doc:docstring))
+let print_symbol (sym : func_sym) =
+  print_endline (Printf.sprintf "Function: %s" sym.name);
+  print_endline (Printf.sprintf "  Address: %s" (Tid.to_string sym.address));
+  if List.is_empty sym.args = false then
+    begin
+      print_endline "  Args:";
+      List.iter ~f:(fun (var, intent) ->
+          print_endline (Printf.sprintf "    arg: %s, intent: %s" var intent)
+        ) sym.args
+    end;
+  print_endline (Printf.sprintf "  Calling Convetion: %s\n" sym.cconv)
 
 
-(**let get_sub_params (program : program term) =*)
+let print_sub_attrs (program : program term) =
+  Term.enum sub_t program |>
+  Seq.iter ~f:(fun s ->
+      let name = Sub.name s in
+      let vars = ref [||] in
+      Term.enum arg_t s |>
+      Seq.iter ~f:(fun a ->
+          let intention = match Arg.intent a with
+            | Some(In) -> "IN"
+            | Some(Out) -> "OUT"
+            | Some(Both) -> "INOUT"
+            | None -> "UNKNOWN" in
+          vars := Array.append !vars [|(remove_sub_name name (Exp.to_string (Bil.Var(Arg.lhs a))), intention)|]
+      );
+      let fun_symbol = {address = (Term.tid s); name = name; cconv = "cdecl"; args = (Array.to_list !vars);} in
+      print_symbol fun_symbol
+  )
 
 
-(** overwrite Term.visitor function enter_term. If Term has address add key value pair to address list*)
-let generate_tid_map (prog : program term) : word Tid.Map.t =
-  (object
-    inherit [addr Tid.Map.t] Term.visitor
-    method! enter_term _ t addrs = match Term.get_attr t address with
-      | None -> addrs
-      | Some addr -> Map.add_exn addrs ~key:(Term.tid t) ~data:addr
-  end)#run prog Tid.Map.empty
-
-
-
-let main params project =
-  let cconv = String.Map.find_exn params "cconv" in
+let main project =
   let prog = Project.program project in
-  let tid_map = generate_tid_map prog in
+  print_sub_attrs prog
 
 
 let () =
-  let cmdline_params = generate_bap_params cmdline_params in
-  let () = Config.when_ready (fun ({get=(!!)}) ->
-      let params: String.t String.Map.t = List.fold cmdline_params ~init:String.Map.empty ~f:(fun param_map (name, bap_param) ->
-          String.Map.set param_map ~key:name ~data:(!!bap_param)
-        ) in
-      Project.register_pass' ~deps:["callsites"; "x86"] (main params)
-    ) in
-  let () = Config.manpage [
-      `S "DESCRIPTION";
-      `P "Tests the information improvement of function symbols by including calling convention and c header files"
-    ] in
-  ()
+  Project.register_pass' ~deps:["api"] (main)
